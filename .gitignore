@@ -1,0 +1,16 @@
+# Airflow logs
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+
+# Docker volumes
+.mysql_data/
+.postgres_data/
+
+# OS files
+.DS_Store
