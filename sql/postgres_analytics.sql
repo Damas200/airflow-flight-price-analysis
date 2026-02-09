@@ -1,7 +1,6 @@
 
 -- PostgreSQL Analytics Queries
--- Project: Airflow Flight Price Analysis
--- Purpose: Validate KPIs & support reporting/demo
+-- Purpose: Validate KPIs 
 -- =====================================================
 
 -- Use analytics database
@@ -55,3 +54,4 @@ SELECT
 FROM flight_prices_clean
 GROUP BY seasonality
 ORDER BY record_count DESC;
+
