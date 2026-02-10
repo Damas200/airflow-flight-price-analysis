@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS flight_prices_raw (
     -- Flight duration in hours
     duration_hrs DECIMAL(5,2),
 
-    -- Number of stopovers (0 = direct flight)
-    stopovers INT,
+    -- Stopovers (Direct, 1 Stop, and 2 Stops)
+    stopovers VARCHAR(20),
 
     -- Type of aircraft used
     aircraft_type VARCHAR(100),
@@ -69,3 +69,4 @@ CREATE TABLE IF NOT EXISTS flight_prices_raw (
     -- Number of days between booking date and departure
     days_before_departure INT
 );
+
