@@ -1,114 +1,134 @@
-# Import DAG class to define an Airflow workflow
+
+# Flight MySQL to PostgreSQL Analytics DAG
+# Purpose:
+#   - Extract data from MySQL staging
+#   - Clean and validate the data
+#   - Remove duplicates
+#   - Compute KPIs in parallel
+#   - Load results into PostgreSQL analytics database
+# ============================================================
+
+
+# Import Airflow core class
 from airflow import DAG
 
-# TaskFlow API decorator to define tasks as Python functions
+# TaskFlow API allows defining tasks as Python functions
 from airflow.decorators import task
 
-# Hook to connect Airflow with MySQL
+# MySQL and PostgreSQL connection hooks
 from airflow.hooks.mysql_hook import MySqlHook
-
-# Hook to connect Airflow with PostgreSQL
 from airflow.hooks.postgres_hook import PostgresHook
 
-# Utility function for defining DAG start date
+# Utility for setting start date
 from airflow.utils.dates import days_ago
 
-# Pandas is used for data validation, transformation, and KPI computation
+# Pandas for data processing
 import pandas as pd
 
 
-# Define the Airflow DAG
+# Default arguments for the DAG
+# Email notification is enabled if a task fails
+default_args = {
+    "owner": "airflow",
+    "email": ["damas.niyonkuru@amalitech.com"],  # Replace with your real email
+    "email_on_failure": True,
+    "email_on_retry": False,
+}
+
+
+# Define the DAG
 with DAG(
-    dag_id="flight_mysql_to_postgres",      # DAG name shown in Airflow UI
-    start_date=days_ago(1),                 # DAG can run starting from yesterday
-    schedule_interval=None,                 # Run only when triggered manually
-    catchup=False,                          # Do not backfill old DAG runs
-    tags=["phase3", "analytics"]            # Tags for organization in UI
+    dag_id="flight_mysql_to_postgres",
+    default_args=default_args,
+    start_date=days_ago(1),
+    schedule_interval=None,  # Manual execution
+    catchup=False,
+    tags=["phase3", "analytics"]
 ):
 
-    
-    # Extract data from MySQL
-    
+
+    # 1️. EXTRACT DATA FROM MYSQL STAGING
+    # ============================================================
     @task
     def extract_from_mysql():
         """
-        This task extracts raw flight data from the MySQL staging table
-        and loads it into a pandas DataFrame.
+        This task reads raw flight data from MySQL staging database.
         """
 
-        # Create MySQL connection using Airflow connection id
+        # Connect to MySQL using Airflow connection
         mysql_hook = MySqlHook(mysql_conn_id="mysql_staging")
 
-        # Get SQLAlchemy engine to run SQL queries
+        # Create SQLAlchemy engine
         engine = mysql_hook.get_sqlalchemy_engine()
 
-        # Read entire staging table into a pandas DataFrame
+        # Read full table into pandas DataFrame
         df = pd.read_sql("SELECT * FROM flight_prices_raw", engine)
 
-        # Return DataFrame to the next task
         return df
 
 
     
-    # Validate and Transform the Data
-    
+    # 2️. VALIDATE AND TRANSFORM DATA
+    # ============================================================
     @task
     def validate_and_transform(df: pd.DataFrame):
         """
-        This task performs data validation, cleaning, and transformation.
+        This task cleans the data and prepares it for analytics.
         """
 
-        # Remove rows with missing critical values
+        # Remove rows with missing important fields
         df = df.dropna(subset=[
             "airline", "source", "destination",
             "base_fare_bdt", "tax_surcharge_bdt"
         ])
 
-        # Remove invalid fare values (negative numbers)
+        # Remove negative fare values
         df = df[
             (df["base_fare_bdt"] >= 0) &
             (df["tax_surcharge_bdt"] >= 0)
         ]
 
+        # Remove duplicate flights
+        # Duplicates defined by same source, destination, and departure time
+        df = df.drop_duplicates(
+            subset=["source", "destination", "departure_datetime"]
+        )
+
         # Recalculate total fare
-        # Ensures consistency even if CSV total fare is incorrect
+        # This ensures consistency
         df["total_fare_bdt"] = (
             df["base_fare_bdt"] + df["tax_surcharge_bdt"]
         )
 
-        # Create route column (Source → Destination)
+        # Create route column for route-based analysis
         df["route"] = df["source"] + " → " + df["destination"]
 
-        # Define Peak vs Non-Peak seasons
-        # Peak seasons are defined using domain knowledge
+        # Define peak seasons
         peak_seasons = ["Eid", "Winter Holidays"]
 
+        # Create new column for Peak vs Non-Peak comparison
         df["season_type"] = df["seasonality"].apply(
             lambda x: "Peak" if x in peak_seasons else "Non-Peak"
         )
 
-        # Return cleaned and transformed DataFrame
         return df
 
 
     
-    # Load Clean Data & Compute KPIs
-    
+    # 3️. LOAD CLEAN DATA INTO POSTGRESQL
+    # ============================================================
     @task
     def load_clean_data(df: pd.DataFrame):
         """
-        This task loads clean data into PostgreSQL and computes KPIs.
+        This task loads cleaned data into PostgreSQL.
         """
 
-        # Create PostgreSQL connection using Airflow connection id
+        # Connect to PostgreSQL analytics database
         pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
-
-        # Get SQLAlchemy engine
         engine = pg_hook.get_sqlalchemy_engine()
 
-        
-        # Load Clean Flight Data
-        
+        # Load clean dataset
+        # 'replace' makes it safe to rerun (idempotent pipeline)
         df[[
             "airline", "source", "destination",
             "departure_datetime", "arrival_datetime",
@@ -117,75 +137,109 @@ with DAG(
             "tax_surcharge_bdt", "total_fare_bdt",
             "seasonality", "days_before_departure"
         ]].to_sql(
-            "flight_prices_clean",    # Analytics table
+            "flight_prices_clean",
             engine,
-            if_exists="replace",      # Safe re-runs (idempotent)
+            if_exists="replace",
             index=False
         )
 
-        
-        # KPI 1: Average Fare by Airline
-        
+        return df
+
+
+    
+    # 4️. KPI TASKS (RUN IN PARALLEL)
+    # ============================================================
+
+    # KPI 1: Average Fare by Airline
+    @task
+    def kpi_avg_fare(df: pd.DataFrame):
+
+        pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
+        engine = pg_hook.get_sqlalchemy_engine()
+
         df.groupby("airline")["total_fare_bdt"].mean().reset_index() \
             .rename(columns={"total_fare_bdt": "avg_total_fare_bdt"}) \
-            .to_sql(
-                "kpi_avg_fare_by_airline",
-                engine,
-                if_exists="replace",
-                index=False
-            )
+            .to_sql("kpi_avg_fare_by_airline",
+                    engine,
+                    if_exists="replace",
+                    index=False)
 
-        
-        # KPI 2: Booking Count by Airline
-        
+
+    # KPI 2: Booking Count by Airline
+    @task
+    def kpi_booking_count(df: pd.DataFrame):
+
+        pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
+        engine = pg_hook.get_sqlalchemy_engine()
+
         df.groupby("airline").size().reset_index(name="booking_count") \
-            .to_sql(
-                "kpi_booking_count_by_airline",
-                engine,
-                if_exists="replace",
-                index=False
-            )
+            .to_sql("kpi_booking_count_by_airline",
+                    engine,
+                    if_exists="replace",
+                    index=False)
 
-        
-        # KPI 3: Most Popular Routes
-        
+
+    # KPI 3: Most Popular Routes
+    @task
+    def kpi_popular_routes(df: pd.DataFrame):
+
+        pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
+        engine = pg_hook.get_sqlalchemy_engine()
+
         df.groupby("route").size().reset_index(name="booking_count") \
             .sort_values("booking_count", ascending=False) \
-            .to_sql(
-                "kpi_popular_routes",
-                engine,
-                if_exists="replace",
-                index=False
-            )
+            .to_sql("kpi_popular_routes",
+                    engine,
+                    if_exists="replace",
+                    index=False)
 
-        
-        # KPI 4a: Average Fare by Season
-        
+
+    # KPI 4: Seasonal Average Fare
+    @task
+    def kpi_seasonal(df: pd.DataFrame):
+
+        pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
+        engine = pg_hook.get_sqlalchemy_engine()
+
         df.groupby("seasonality")["total_fare_bdt"].mean().reset_index() \
             .rename(columns={"total_fare_bdt": "avg_total_fare_bdt"}) \
-            .to_sql(
-                "kpi_seasonal_fares",
-                engine,
-                if_exists="replace",
-                index=False
-            )
+            .to_sql("kpi_seasonal_fares",
+                    engine,
+                    if_exists="replace",
+                    index=False)
 
-        
-        # KPI 4b: Peak vs Non-Peak Fare Comparison
-        
+
+    # KPI 5: Peak vs Non-Peak Comparison
+    @task
+    def kpi_peak_vs_non_peak(df: pd.DataFrame):
+
+        pg_hook = PostgresHook(postgres_conn_id="postgres_analytics")
+        engine = pg_hook.get_sqlalchemy_engine()
+
         df.groupby("season_type")["total_fare_bdt"].mean().reset_index() \
             .rename(columns={"total_fare_bdt": "avg_total_fare_bdt"}) \
-            .to_sql(
-                "kpi_peak_vs_non_peak_fares",
-                engine,
-                if_exists="replace",
-                index=False
-            )
+            .to_sql("kpi_peak_vs_non_peak_fares",
+                    engine,
+                    if_exists="replace",
+                    index=False)
 
 
-    # Define task execution order (dependency chain)
-    load_clean_data(
-        validate_and_transform(
-            extract_from_mysql()
-        )
-    )
+    # ============================================================
+    # DAG EXECUTION FLOW
+    # ============================================================
+
+    # Step 1: Extract
+    extracted = extract_from_mysql()
+
+    # Step 2: Clean and Transform
+    cleaned = validate_and_transform(extracted)
+
+    # Step 3: Load Clean Data
+    loaded = load_clean_data(cleaned)
+
+    # Step 4: Run KPI tasks in parallel
+    kpi_avg_fare(loaded)
+    kpi_booking_count(loaded)
+    kpi_popular_routes(loaded)
+    kpi_seasonal(loaded)
+    kpi_peak_vs_non_peak(loaded)
