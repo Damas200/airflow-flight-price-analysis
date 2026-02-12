@@ -41,17 +41,17 @@ After validation and duplicate removal, the final clean dataset contains:
 +---------------------------+----------------------+
               |                              |
               v                              v
-+---------------------------+      +-----------------------------+
-|      MySQL (Staging)      |      |   PostgreSQL (Analytics)    |
-|                           |      |                             |
-|  Table: flight_prices_raw |      |  Table: flight_prices_clean |
-|                           |      |                             |
-|                           |      |  KPI Tables:                |
-|                           |      |   - kpi_avg_fare_by_airline |
++---------------------------+      +----------------------------------+
+|      MySQL (Staging)      |      |   PostgreSQL (Analytics)         |
+|                           |      |                                  |
+|  Table: flight_prices_raw |      |  Table: flight_prices_clean      |
+|                           |      |                                  |
+|                           |      |  KPI Tables:                     |
+|                           |      |   - kpi_avg_fare_by_airline      |
 |                           |      |   - kpi_booking_count_by_airline |
-|                           |      |   - kpi_popular_routes      |
-|                           |      |   - kpi_peak_vs_non_peak_fares |
-+---------------------------+      +-----------------------------+
+|                           |      |   - kpi_popular_routes           |
+|                           |      |   - kpi_peak_vs_non_peak_fares   |
++---------------------------+      +----------------------------------+
 ```
 
 ---
@@ -182,3 +182,4 @@ This ensures:
 The system architecture successfully supports a complete data engineering workflow, from raw data ingestion to analytical insights. The modular and layered design ensures data quality, reliability, and ease of maintenance, making the solution suitable for real-world analytics applications.
 
 ---
+
